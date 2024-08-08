@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>JuliusBH Variables</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            margin: 0;
+            padding: 20px;
+            text-align: center;
+        }
+        #content {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+        }
+        h1 {
+            color: #333;
+        }
+        #date {
+            margin-top: 10px;
+            font-size: 1.2em;
+            color: #666;
+        }
+    </style>
+</head>
+<body>
+    <div id="content">
+        <h1>JuliusBH Variables</h1>
+        <p id="date"></p>
+        <p id="rainfall">Cargando datos de Rainfall...</p>
+        <p id="heatIndex">Cargando datos de Heat Index...</p>
+        <p id="humidity">Cargando datos de Humidity...</p>
+        <p id="temperature">Cargando datos de Temperature...</p>
+    </div>
+
+    <script>
+        // Función para actualizar la fecha
+        function updateDate() {
+            const now = new Date();
+            const dateString = now.toLocaleDateString('es-ES', {
+                weekday: 'long', year: 'numeric', month: 'long', day: 'numeric'
+            });
+            document.getElementById('date').innerText = dateString;
+        }
+
+        // Función para obtener datos de Rainfall (Field 7)
+        function fetchRainfallData() {
+            const channelId = '1518190';
+            const fieldId = '7';
+            const url = `https://api.thingspeak.com/channels/${channelId}/fields/${fieldId}/last.json`;
+
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('rainfall').innerText = `Rainfall: ${parseFloat(data.field7).toFixed(2)} mm`;
+                })
+                .catch(error => {
+                    document.getElementById('rainfall').innerText = 'Error al cargar los datos de Rainfall.';
+                });
+        }
+
+        // Función para obtener datos de Heat Index (Field 6)
+        function fetchHeatIndexData() {
+            const channelId = '1518190';
+            const fieldId = '6';
+            const url = `https://api.thingspeak.com/channels/${channelId}/fields/${fieldId}/last.json`;
+
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('heatIndex').innerText = `Heat Index: ${parseFloat(data.field6).toFixed(1)} °C`;
+                })
+                .catch(error => {
+                    document.getElementById('heatIndex').innerText = 'Error al cargar los datos de Heat Index.';
+                });
+        }
+
+        // Función para obtener datos de Humidity (Field 5)
+        function fetchHumidityData() {
+            const channelId = '1518190';
+            const fieldId = '5';
+            const url = `https://api.thingspeak.com/channels/${channelId}/fields/${fieldId}/last.json`;
+
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('humidity').innerText = `Humidity: ${parseFloat(data.field5).toFixed(1)} %`;
+                })
+                .catch(error => {
+                    document.getElementById('humidity').innerText = 'Error al cargar los datos de Humidity.';
+                });
+        }
+
+        // Función para obtener datos de Temperature (Field 4)
+        function fetchTemperatureData() {
+            const channelId = '1518190';
+            const fieldId = '4';
+            const url = `https://api.thingspeak.com/channels/${channelId}/fields/${fieldId}/last.json`;
+
+            fetch(url)
+                .then(response => response.json())
+                .then(data => {
+                    document.getElementById('temperature').innerText = `Temperature: ${parseFloat(data.field4).toFixed(1)} °C`;
+                })
+                .catch(error => {
+                    document.getElementById('temperature').innerText = 'Error al cargar los datos de Temperature.';
+                });
+        }
+
+        // Actualizar la fecha al cargar la página
+        updateDate();
+
+        // Obtener datos de ThingSpeak al cargar la página
+        fetchRainfallData();
+        fetchHeatIndexData();
+        fetchHumidityData();
+        fetchTemperatureData();
+    </script>
+</body>
+</html>
