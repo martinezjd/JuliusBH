@@ -412,7 +412,7 @@ void fetchRainfallFromThingSpeak() {
   HTTPClient http;
   String url = "http://api.thingspeak.com/channels/" + String(myChannelNumber) + "/fields/7/last?api_key=" + String(myReadAPIKey);
   
-  const int maxRetries = 3;
+  const int maxRetries = 6;
   int attempt = 0;
   int httpCode = 0;
   bool success = false;
@@ -430,7 +430,7 @@ void fetchRainfallFromThingSpeak() {
     } else {
       printToSerials("Failed to fetch data from ThingSpeak. HTTP error code: " + String(httpCode));
       attempt++;
-      delay(2000); // Wait for 2 seconds before retrying
+      delay(20000); // Wait for 2 seconds before retrying
     }
 
     http.end();
