@@ -1,0 +1,459 @@
+
+#include <WiFi.h>
+#include "esp_wifi.h"
+#include <HTTPClient.h>
+#include <Wire.h>
+#include <RTClib.h>
+#include <time.h>
+#include "ThingSpeak.h"
+#include <esp_task_wdt.h>
+#include <esp_system.h>
+#include <ESP_Mail_Client.h>
+#include <BluetoothSerial.h>
+
+// WiFi network credentials
+const char* ssid1 = "Julius BH 5G";
+const char* password1 = "0123456789";
+const char* ssid2 = "Julius BH";
+const char* password2 = "0123456789";
+const char* ssid3 = "Julius BH_EXT";
+const char* password3 = "0123456789";
+const char* ssid4 = "Julius BH_Movil";
+const char* password4 = "0123456789";
+
+// Maximum wait time for connection attempt (in milliseconds)
+const int maxWaitTime = 10000;  // 10 seconds
+
+unsigned long myChannelNumber = 1518190;
+const char* myWriteAPIKey = "SY7GKXAS3TWI2TO8";
+const char* myReadAPIKey = "ULK7EJ5264OS9WE8";
+
+// Static IP settings (optional, can be removed if not used)
+IPAddress local_IP(192, 168, 1, 50);
+IPAddress gateway(192, 168, 1, 1);
+IPAddress subnet(255, 255, 255, 0);
+IPAddress DNS(8, 8, 8, 8);
+
+int pulseCount = 0;
+int lastPulseCount = 0;
+int thingSpeakCount = 0;
+
+const int interruptPin = 33;  // Example interrupt pin
+unsigned long lastDebounceTime = 0;
+const unsigned long debounceDelay = 1000;  // Adjust as needed
+
+unsigned long lastSyncTime = 0;
+const unsigned long syncInterval = 3600000;  // Sync every 1 hour (60 * 60 * 1000)
+
+unsigned long lastSyncThingSpeakTime = 0;
+const unsigned long thingSpeakSyncInterval = 30000;  // 30 seconds interval for ThingSpeak
+
+unsigned long lastWiFiCheckTime = 0;
+unsigned long WiFiCheckInterval = 60000;
+
+unsigned long lastrainRateMillis = 0;
+const unsigned long rainRateInterval = 500;  // 0.5 second interval for rain rate calculation
+unsigned long lastRainRateCalcTime = 0;
+
+float rainFallAmount = 0;
+float lastRainfall = 0;
+float rainfall = 0;
+float rainRate = 0;
+
+const int batteryPin = 35;  // Pin for battery voltage reading
+const float voltageDividerFactor = 2.0;  // Voltage divider factor (adjust according to your circuit)
+const float referenceVoltage = 3.3;  // Reference voltage for ADC
+const int adcMaxValue = 4095;  // Maximum value for 12-bit ADC
+const float lowBatteryThreshold = 3.3;  // Low battery threshold in volts
+
+
+bool isPrimaryNetwork = true;
+
+void connectToBestWiFi();
+void connectWiFi(const char* ssid, const char* password);
+void setMaxWiFiPower();
+void checkWiFiPower();
+void synchronizeTime();
+void synchronizeThingSpeak();
+void printLocalTime();
+void rainRateCalc();
+void midNightReset();
+void printToSerials(const String &message);
+void imprimirInfoWiFi();
+void reconnectWiFi();
+void fetchRainfallFromThingSpeak();
+
+WiFiClient client;
+RTC_DS3231 RTC;
+BluetoothSerial SerialBT;
+
+// Gmail SMTP server settings
+#define SMTP_HOST "smtp.gmail.com"
+#define SMTP_PORT 587
+
+// Email login credentials
+#define AUTHOR_EMAIL "julio.daniel.martinez.cruz@gmail.com"
+#define AUTHOR_PASSWORD "phxsemsswthonulw"  // App Password if 2FA is enabled, or your Gmail password if not
+
+// Recipient email
+#define RECIPIENT_EMAIL "julio.daniel.martinez.cruz@gmail.com"
+
+// Initialize the email session
+SMTPSession smtp;
+
+// Interrupt service routine
+void IRAM_ATTR handleInterrupt() {
+  esp_task_wdt_reset();
+  unsigned long intCurrentMillis = millis();
+  if ((intCurrentMillis - lastDebounceTime) > debounceDelay) {
+    lastDebounceTime = intCurrentMillis;
+    pulseCount++;
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  //WiFi.config(local_IP, gateway, subnet, DNS);  // Uncomment if using static IP
+  ThingSpeak.begin(client);  // Initialize ThingSpeak
+  RTC.begin();
+  SerialBT.begin("Julius_BH_Pluviometro");  // Initialize Bluetooth serial
+  pinMode(interruptPin, INPUT_PULLUP);  // Setup interrupt pin
+  attachInterrupt(interruptPin, handleInterrupt, FALLING);  // Attach interrupt
+
+  // Watchdog timer initialization
+  esp_task_wdt_init(30, false);
+  printToSerials("WiFi setup");
+  // esp_wifi_set_max_tx_power(84);
+  
+  connectToBestWiFi();
+  
+
+  printToSerials("Time setup");
+  synchronizeTime();  // Synchronize time using NTP
+
+  // Send an email indicating that the device has restarted
+  sendEmail("Rain gauge restarted");
+  fetchRainfallFromThingSpeak();
+
+}
+
+void loop() {
+  esp_task_wdt_reset();
+  unsigned long currentMillis = millis();
+
+   reconnectWiFi();
+
+   if (currentMillis - lastWiFiCheckTime >= WiFiCheckInterval) {
+    checkBattery();
+    connectToBestWiFi();
+    lastWiFiCheckTime = currentMillis;
+    printToSerials("Best WiFi Interval");
+  }
+
+  // If the pulse count has changed, calculate and log the rainfall
+  if ((pulseCount - lastPulseCount) > 0) {
+    lastPulseCount = pulseCount;
+    rainfall = float(pulseCount) * 0.250;
+    printToSerials("Rain Calculation");
+    printToSerials(String(rainfall));
+  } 
+
+
+  
+
+  // Synchronize with ThingSpeak at the specified interval
+  if (currentMillis - lastSyncThingSpeakTime >= thingSpeakSyncInterval) {
+    synchronizeThingSpeak();
+    lastSyncThingSpeakTime = currentMillis;
+    printToSerials("ThingSpeak Sync Interval");
+  }
+
+  // Synchronize time at the specified interval
+  if (currentMillis - lastSyncTime >= syncInterval) {
+    synchronizeTime();
+    lastSyncTime = currentMillis;
+    printToSerials("NTP Sync Interval");
+  }
+
+  // Calculate the rain rate at the specified interval
+  if (currentMillis - lastrainRateMillis >= rainRateInterval) {
+    rainRateCalc();
+    lastrainRateMillis = currentMillis;
+  }
+
+  midNightReset();  // Reset at midnight
+}
+
+void connectWiFi(const char* ssid, const char* password) {
+  WiFi.disconnect();
+  WiFi.begin(ssid, password);
+  int maxRetries = 10;
+  int retryCount = 0;
+  while (WiFi.status() != WL_CONNECTED && retryCount < maxRetries) {
+    delay(1000);
+    Serial.print(".");
+    retryCount++;
+  }
+  if (WiFi.status() == WL_CONNECTED) {
+    printToSerials("Connected to " + String(ssid));
+  } else {
+    printToSerials("Failed to connect to " + String(ssid));
+  }
+}
+
+void synchronizeTime() {
+  esp_task_wdt_reset();
+  printToSerials("Synchronizing time...");
+  configTime(-4 * 3600, 0, "time.nist.gov");  // Set time zone
+  unsigned long startSyncTime = millis();
+  while (!time(nullptr) && millis() - startSyncTime < 30000) {  // 30 seconds timeout
+    delay(1000);
+    printToSerials("Waiting for synchronization...");
+  }
+  if (time(nullptr)) {
+    time_t now = time(nullptr);
+    struct tm timeinfo;
+    gmtime_r(&now, &timeinfo);
+    RTC.adjust(DateTime(timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday, timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec));
+    printLocalTime();
+  } else {
+    printToSerials("Time synchronization failed");
+  }
+}
+
+void synchronizeThingSpeak() {
+  esp_task_wdt_reset();
+  ThingSpeak.setField(7, rainfall);
+  ThingSpeak.setField(8, rainFallAmount);
+  Serial.println(rainfall);
+  printToSerials("ThingSpeak entry");
+  int x = ThingSpeak.writeFields(myChannelNumber, myWriteAPIKey);
+  if (x == 200) {
+    printToSerials("Channel update successful.");
+    thingSpeakCount = 0;
+    printLocalTime();
+    imprimirInfoWiFi();
+  } else {
+    printToSerials("Problem updating channel. HTTP error code " + String(x));
+    thingSpeakCount++;
+    printToSerials(String(thingSpeakCount));
+    imprimirInfoWiFi();
+    if (thingSpeakCount == 10) {
+      sendEmail("Rain gauge restarting due to ThingSpeak issues");
+      esp_restart();
+    }
+  }
+}
+
+void printLocalTime() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    printToSerials("Failed to obtain time");
+    return;
+  }
+  Serial.println(&timeinfo, "%A, %B %d, %Y %H:%M:%S");
+}
+
+void rainRateCalc() {
+  unsigned long currentMillis = millis();
+  if (currentMillis - lastRainRateCalcTime >= 3600000) {  // 3600000 ms = 1 hour
+    rainFallAmount = rainfall - lastRainfall;
+    lastRainfall = rainfall;
+    lastRainRateCalcTime = currentMillis;
+
+    Serial.print("Cantidad de lluvia en la última hora: ");
+    Serial.println(rainFallAmount);
+  }
+}
+
+void midNightReset() {
+  struct tm timeinfo;
+  if (getLocalTime(&timeinfo)) {
+    if (timeinfo.tm_hour == 0 && timeinfo.tm_min == 0) {
+      printToSerials("¡Es medianoche!");
+      rainfall = 0;
+      synchronizeThingSpeak();
+      delay(60000); // Esperar 1 minuto para asegurar que el reset sea realizado
+      esp_restart();
+    }
+  }
+}
+
+void sendEmail(const char* messageContent) {
+  // Declarar la configuración de la sesión para las credenciales definidas por el usuario
+  Session_Config config;
+
+  // Configurar los detalles del servidor SMTP
+  config.server.host_name = SMTP_HOST;
+  config.server.port = SMTP_PORT;
+  config.login.email = AUTHOR_EMAIL;
+  config.login.password = AUTHOR_PASSWORD;
+  config.login.user_domain = F("127.0.0.1");
+
+  // Configurar el tiempo NTP (opcional)
+  config.time.ntp_server = F("pool.ntp.org,time.nist.gov");
+  config.time.gmt_offset = -4;  // Ajustar según tu zona horaria
+  config.time.day_light_offset = 0;
+
+  // Declarar el mensaje de correo electrónico
+  SMTP_Message message;
+
+  // Configurar los encabezados del mensaje
+  message.sender.name = F("ESP Mail");
+  message.sender.email = AUTHOR_EMAIL;
+  message.subject = F("Alerta desde ESP32");
+  message.addRecipient(F("Julio"), RECIPIENT_EMAIL);
+
+  // Configurar el contenido del mensaje
+  message.text.content = messageContent;
+  message.text.content_type = F("text/plain");
+  message.text.charSet = F("us-ascii");
+  message.text.transfer_encoding = Content_Transfer_Encoding::enc_7bit;
+
+  // Establecer prioridad y notificaciones del mensaje
+  message.priority = esp_mail_smtp_priority::esp_mail_smtp_priority_low;
+
+  // Conectar al servidor SMTP
+  if (!smtp.connect(&config)) {
+    Serial.printf("Error de conexión, Código de estado: %d, Código de error: %d, Razón: %s\n", smtp.statusCode(), smtp.errorCode(), smtp.errorReason().c_str());
+    return;
+  }
+
+  // Comprobar el estado de autenticación
+  if (!smtp.isLoggedIn()) {
+    printToSerials("Error, No ha iniciado sesión.");
+  } else {
+    if (smtp.isAuthenticated())
+      printToSerials("Sesión iniciada exitosamente.");
+    else
+      printToSerials("Conectado sin autenticación.");
+  }
+
+  // Enviar el correo electrónico y cerrar la sesión
+  if (!MailClient.sendMail(&smtp, &message))
+    Serial.printf("Error, Código de estado: %d, Código de error: %d, Razón: %s\n", smtp.statusCode(), smtp.errorCode(), smtp.errorReason().c_str());
+
+  // Limpiar el resultado del envío para liberar memoria
+  smtp.sendingResult.clear();
+
+  Serial.printf("Memoria libre: %d\n", MailClient.getFreeHeap());
+}
+
+void printToSerials(const String &message) {
+  Serial.println(message);  // Imprimir en el puerto serie
+  SerialBT.println(message);  // Imprimir en el puerto serie Bluetooth
+}
+
+void imprimirInfoWiFi() {
+  // Imprimir el SSID de la red WiFi
+  printToSerials("SSID de la red WiFi: ");
+  printToSerials(WiFi.SSID());
+
+  // Obtener la intensidad de la señal WiFi (RSSI)
+  int32_t rssi = WiFi.RSSI();
+
+  // Imprimir la intensidad de la señal en el puerto serie
+  printToSerials("Intensidad de la señal WiFi (RSSI): ");
+  printToSerials(String(rssi));
+  printToSerials(" dBm");
+}
+
+void connectToBestWiFi() {
+  // List of SSIDs and passwords
+  const char* ssids[] = {ssid1, ssid2, ssid3, ssid4};
+  const char* passwords[] = {password1, password2, password3, password4};
+  
+  int bestSignal = -100;
+  int bestIndex = -1;
+  
+  // Scan for networks
+  int numNetworks = WiFi.scanNetworks();
+  for (int i = 0; i < numNetworks; i++) {
+    String detectedSSID = WiFi.SSID(i);
+    int signalStrength = WiFi.RSSI(i);
+    for (int j = 0; j < 4; j++) {
+      if (detectedSSID == ssids[j] && signalStrength > bestSignal) {
+        bestSignal = signalStrength;
+        bestIndex = j;
+      }
+    }
+  }
+  
+  if (bestIndex != -1) {
+    connectWiFi(ssids[bestIndex], passwords[bestIndex]);
+    if (WiFi.status() == WL_CONNECTED) {
+      printToSerials("Connected to " + String(ssids[bestIndex]));
+    } else {
+      printToSerials("Failed to connect to " + String(ssids[bestIndex]));
+    }
+  } else {
+    printToSerials("No preferred WiFi networks found.");
+  }
+}
+
+void reconnectWiFi() {
+  if (WiFi.status() != WL_CONNECTED) {
+    printToSerials("WiFi disconnected. Reconnecting...");
+    WiFi.disconnect();
+    delay(1000);  // Esperar 1 segundo antes de intentar reconectar
+    // Intentar reconectar a la mejor red disponible
+    connectToBestWiFi();
+  }
+ 
+}
+
+void fetchRainfallFromThingSpeak() {
+  // Make sure the WiFi is connected
+  if (WiFi.status() != WL_CONNECTED) {
+    printToSerials("WiFi not connected. Can't fetch data from ThingSpeak.");
+    return;
+  }
+
+  HTTPClient http;
+  String url = "http://api.thingspeak.com/channels/" + String(myChannelNumber) + "/fields/7/last?api_key=" + String(myReadAPIKey);
+  
+  const int maxRetries = 3;
+  int attempt = 0;
+  int httpCode = 0;
+  bool success = false;
+
+  while (attempt < maxRetries && !success) {
+    http.begin(url);
+    httpCode = http.GET();
+    
+    if (httpCode == HTTP_CODE_OK) {
+      String payload = http.getString();
+      printToSerials("ThingSpeak response payload: " + payload);
+      rainfall = payload.toFloat();
+      printToSerials("Fetched rainfall from ThingSpeak: " + String(rainfall));
+      success = true;
+    } else {
+      printToSerials("Failed to fetch data from ThingSpeak. HTTP error code: " + String(httpCode));
+      attempt++;
+      delay(2000); // Wait for 2 seconds before retrying
+    }
+
+    http.end();
+  }
+
+  if (!success) {
+    printToSerials("Failed to fetch data from ThingSpeak after " + String(maxRetries) + " attempts.");
+  }
+}
+
+void checkBattery() {
+  // Leer el valor del ADC
+  int adcValue = analogRead(batteryPin);
+
+  // Convertir el valor del ADC al voltaje real de la batería
+  float measuredVoltage = ((float)adcValue / adcMaxValue) * referenceVoltage * voltageDividerFactor;
+
+  // Imprimir el voltaje de la batería
+  printToSerials("Battery Voltage: " + String(measuredVoltage) + " V");
+
+  // Tomar acción si el voltaje está por debajo de un umbral crítico (opcional)
+  if (measuredVoltage < lowBatteryThreshold) {
+    printToSerials("Warning: Low Battery!");
+    // Puedes añadir aquí alguna acción, como enviar una alerta o poner el ESP32 en modo de bajo consumo
+  }
+}
